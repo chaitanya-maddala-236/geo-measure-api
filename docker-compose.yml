@@ -1,0 +1,15 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////data/geo_measure.db
+      MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-52428800}
+      MAX_ARCHIVE_UNCOMPRESSED_BYTES: ${MAX_ARCHIVE_UNCOMPRESSED_BYTES:-209715200}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - geomeasure_data:/data
+
+volumes:
+  geomeasure_data:
