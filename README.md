@@ -1,118 +1,55 @@
 # GeoMeasure API
 
-GeoMeasure API is a synchronous FastAPI service that accepts KML files and ZIP
-archives containing one ESRI Shapefile. It extracts and persists source
-features, returns their attributes and GeoJSON geometry, and calculates polygon
-area or line length in meters when a safe projected CRS is available.
+GeoMeasure is a FastAPI service for uploading KML files and ZIP archives that
+contain an ESRI Shapefile. It extracts feature geometry and attributes, stores
+the results in SQLite, and calculates polygon area or line length in meters
+when the source CRS supports a safe projected measurement.
 
-## Features
+## What it supports
 
-- Accepts `.kml` and `.zip` Shapefile uploads.
-- Persists file records and extracted feature results in SQLite.
-- Calculates Polygon/MultiPolygon area in square meters and
-  LineString/MultiLineString length in meters.
-- Marks Point/MultiPoint as `NOT_REQUIRED` and unsupported geometry as
-  `UNSUPPORTED` without stopping other features.
-- Transforms geographic coordinates to a local projected CRS before measuring.
-- Validates ZIP integrity, companion files, extraction paths and archive size.
-- Exposes interactive OpenAPI documentation at `/docs`.
+- `.kml` files and `.zip` archives containing exactly one Shapefile.
+- Polygon and MultiPolygon area in square meters (`m²`).
+- LineString and MultiLineString length in meters (`m`).
+- Point and MultiPoint features with status `NOT_REQUIRED`.
+- Other geometry types retained with status `UNSUPPORTED`.
+- Geographic and non-meter CRS transformation before measurement.
+- Per-feature measurement errors, so an unmeasurable feature does not discard
+  the other features in the file.
+- Bounded uploads and ZIP validation for unsafe paths, symlinks, encrypted
+  members, corrupt archives, too many entries, and oversized extraction.
 
-## Tech stack
+## Quick start with Docker
 
-- **FastAPI / Pydantic** for HTTP APIs and response validation.
-- **GeoPandas / Pyogrio / Shapely** for vector-file reading and geometry work.
-- **PyProj** for CRS inspection and coordinate transformation.
-- **SQLAlchemy / SQLite** for persistence.
-- **Pytest / HTTPX / Ruff / Black** for tests and code quality.
+Prerequisite: Docker Desktop or Docker Engine with Docker Compose.
 
-## Architecture
-
-```text
-app/
-├── main.py                 # Application factory, lifespan and error handler
-├── api/files.py            # HTTP routes
-├── core/                   # Settings, exceptions and logging
-├── db/                     # SQLAlchemy engine and models
-├── schemas/files.py        # Response contracts
-├── services/
-│   ├── file_service.py     # Upload orchestration and persistence
-│   ├── geospatial_service.py # KML and Shapefile parsing
-│   ├── crs_service.py      # Measurement CRS selection
-│   └── measurement_service.py # Per-feature measurement outcomes
-└── utils/                  # ZIP validation and JSON normalization
+```bash
+git clone https://github.com/chaitanya-maddala-236/geo-measure-api.git
+cd geo-measure-api
+docker compose up --build
 ```
 
-Routes handle HTTP input and output. Services implement file processing and
-measurements. SQLAlchemy models define persistence, and Pydantic schemas define
-the public response format. SQLite tables are initialized from SQLAlchemy
-metadata at application startup; Alembic migrations are not needed for this
-small initial version and can be added when schema evolution is required.
+The API listens on [http://127.0.0.1:8000](http://127.0.0.1:8000). Open
+[Swagger UI](http://127.0.0.1:8000/docs) to try the endpoints, or check
+[the health endpoint](http://127.0.0.1:8000/health). Docker Compose stores the
+SQLite database in the named `geomeasure_data` volume. Stop the service with
+`Ctrl+C`; use `docker compose down` to remove the container and network while
+keeping the database volume.
 
-## Processing flow
+## Run locally with Python
 
-```text
-Upload
-→ Extension and size validation
-→ ZIP integrity, path and companion-file validation (when applicable)
-→ GeoPandas parsing
-→ Feature, geometry and property extraction
-→ Source CRS inspection and projected CRS selection
-→ Measurement calculation per feature
-→ SQLite persistence
-→ API response
-```
-
-Uploads are copied in bounded chunks to a temporary directory. ZIP contents are
-checked for traversal paths, symlinks, encryption, CRC failures and total
-uncompressed size before extraction. The temporary directory is removed after
-processing. One file record is created for accepted extensions; a parser or
-archive failure is returned as a `FAILED` processing record with a safe error
-message.
-
-Feature geometry is stored once as GeoJSON in the feature row along with its
-properties and measurement. This keeps measurement responses available after
-the temporary upload is removed. Files use UUID-style public IDs; feature
-database keys remain internal.
-
-## CRS strategy
-
-Area and length are never calculated on geographic longitude/latitude values.
-For a projected source CRS whose coordinate units are meters, GeoMeasure uses
-that CRS. For a geographic CRS, or a projected CRS whose axes are not meters,
-the service transforms the dataset extent to geographic coordinates and selects
-the UTM zone containing the combined feature centroid. EPSG:326xx is selected
-in the northern hemisphere and EPSG:327xx in the southern hemisphere. At
-latitudes north of 84° or south of 80°, the corresponding WGS 84 UPS polar
-stereographic CRS is selected.
-
-This produces meter-based coordinates before calculating polygon area or line
-length. EPSG:4326 uses angular degrees, whose areas and distances vary with
-latitude, so degree-based calculations would not represent square meters or
-meters. If CRS metadata is missing, features are still retained, but measurable
-features receive `ERROR` and a null measurement. The service does not guess a
-CRS.
-
-UTM works best for local datasets within or near one zone. A single centroid-
-based projection can introduce material distortion for data spanning multiple
-zones, crossing the antimeridian, or covering a large region. Meter-based
-projected input is trusted as supplied, so distortion inherent in projections
-such as Web Mercator is not corrected. Global or legal-grade measurements may
-need a geodesic calculation or a domain-specific equal-area projection.
-
-## Setup
-
-Requires Python 3.11 or newer. GeoPandas/Pyogrio wheels provide their GDAL
-runtime for local Python installs; the Docker image also installs system GDAL,
-PROJ and GEOS packages.
+Requires Python 3.11 or newer. GeoPandas and Pyogrio install their supported
+binary wheels for common platforms. Docker is recommended when the local system
+does not have compatible GDAL/PROJ libraries.
 
 ### Windows PowerShell
 
 ```powershell
-py -3 -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 Copy-Item .env.example .env
+uvicorn app.main:app --reload
 ```
 
 ### macOS / Linux
@@ -121,52 +58,56 @@ Copy-Item .env.example .env
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
-```
-
-The service uses `sqlite:///./geo_measure.db` by default. Settings can be
-changed in `.env` or as environment variables:
-
-| Setting | Default | Purpose |
-| --- | ---: | --- |
-| `DATABASE_URL` | `sqlite:///./geo_measure.db` | SQLAlchemy database URL |
-| `MAX_UPLOAD_SIZE_BYTES` | `52428800` (50 MiB) | Maximum uploaded file size |
-| `MAX_ARCHIVE_UNCOMPRESSED_BYTES` | `209715200` (200 MiB) | Maximum ZIP expanded size |
-| `LOG_LEVEL` | `INFO` | Application log level |
-
-## Run
-
-```bash
 uvicorn app.main:app --reload
 ```
 
-Open [http://localhost:8000/docs](http://localhost:8000/docs) for Swagger UI.
+The API is available at `http://127.0.0.1:8000`; interactive API docs are at
+`/docs`. The development requirements include the test client, pytest, Ruff
+and Black. The Docker image installs only `requirements.txt`, which contains
+runtime dependencies.
 
-## Docker
+## Configuration
 
-```bash
-docker compose up --build
-```
+Settings can be supplied in `.env` or as environment variables. Environment
+variables take precedence.
 
-The API listens on port 8000 and persists SQLite data in the named
-`geomeasure_data` volume. Set `MAX_UPLOAD_SIZE_BYTES`,
-`MAX_ARCHIVE_UNCOMPRESSED_BYTES` or `LOG_LEVEL` in the environment before
-starting Compose to override the defaults.
+| Setting | Default | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite:///./geo_measure.db` | SQLAlchemy database URL |
+| `MAX_UPLOAD_SIZE_BYTES` | `52428800` (50 MiB) | Maximum compressed upload size |
+| `MAX_ARCHIVE_UNCOMPRESSED_BYTES` | `209715200` (200 MiB) | Maximum total ZIP expansion size |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+
+The original uploaded file is temporary and is deleted after processing. File
+metadata, extracted geometries, properties, and measurement results remain in
+the configured database.
 
 ## API
 
+All upload requests use `multipart/form-data` with a file field named `upload`.
+
 ### `POST /api/files/`
 
-Multipart form field `upload` accepts a `.kml` file or `.zip` containing exactly
-one Shapefile. Accepted uploads return HTTP 201 and a file record. A file that
-was accepted by extension but fails parsing is also recorded with `status` set
-to `FAILED` and an `error_message`. Unsupported extensions return 415; empty or
-oversized uploads return 400 or 413.
+Upload a `.kml` or `.zip` Shapefile archive. A valid upload returns HTTP `201`
+with its processing record. A file that passes upload validation but cannot be
+parsed is still recorded with status `FAILED` and an `error_message`.
 
 ```bash
-curl -F "upload=@survey.kml" http://localhost:8000/api/files/
+curl -F "upload=@survey.kml" http://127.0.0.1:8000/api/files/
 ```
+
+PowerShell can use `curl.exe` with the same form field:
+
+```powershell
+curl.exe -F "upload=@survey.kml" http://127.0.0.1:8000/api/files/
+```
+
+For a Shapefile, upload a ZIP containing the `.shp`, `.shx`, and `.dbf`
+components with matching names. A `.prj` file is recommended to provide CRS
+metadata. Without a CRS, features are retained but polygon and line measurements
+are marked `ERROR` rather than guessed.
 
 Example response:
 
@@ -184,24 +125,29 @@ Example response:
 }
 ```
 
+Common upload errors include HTTP `415` for unsupported extensions, `400` for
+an empty upload, and `413` when the upload exceeds its configured size limit.
+Expected parse and archive errors return a file record with status `FAILED`.
+
 ### `GET /api/files/{id}/`
 
-Returns the same file metadata record. Unknown IDs return HTTP 404.
+Return the metadata and processing status for one upload. An unknown ID returns
+HTTP `404`.
 
 ```bash
-curl http://localhost:8000/api/files/8fb253821e75453598cda6a70bdbef0e/
+curl http://127.0.0.1:8000/api/files/8fb253821e75453598cda6a70bdbef0e/
 ```
 
 ### `GET /api/files/{id}/measurements/`
 
-Returns one entry per feature, including its source CRS, GeoJSON geometry,
-properties, measurement status and optional measurement CRS.
+Return every feature's source GeoJSON geometry, CRS, properties, and measurement
+outcome. Measurements are calculated in a projected CRS with meter units.
 
 ```bash
-curl http://localhost:8000/api/files/8fb253821e75453598cda6a70bdbef0e/measurements/
+curl http://127.0.0.1:8000/api/files/8fb253821e75453598cda6a70bdbef0e/measurements/
 ```
 
-Example response:
+Example response (shortened to one feature):
 
 ```json
 {
@@ -214,10 +160,13 @@ Example response:
     {
       "feature_index": 0,
       "geometry_type": "Polygon",
-      "geometry": {"type": "Polygon", "coordinates": [[[78.0, 17.0], [78.001, 17.0], [78.001, 17.001], [78.0, 17.0]]]},
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[78.0, 17.0], [78.001, 17.0], [78.001, 17.001], [78.0, 17.0]]]
+      },
       "crs": "EPSG:4326",
       "properties": {"name": "parcel"},
-      "measurement": 11700.5,
+      "measurement": 5902.5,
       "measurement_type": "area",
       "measurement_unit": "m²",
       "measurement_status": "CALCULATED",
@@ -228,15 +177,82 @@ Example response:
 }
 ```
 
-Measurement statuses are `CALCULATED`, `NOT_REQUIRED`, `UNSUPPORTED` and
-`ERROR`. A measurement error is returned per feature and does not discard other
-features.
+`measurement_status` is one of:
+
+| Status | Meaning |
+| --- | --- |
+| `CALCULATED` | A measurement was calculated successfully. |
+| `NOT_REQUIRED` | Point and MultiPoint geometries do not need a measurement. |
+| `UNSUPPORTED` | The geometry type is retained but has no measurement implementation. |
+| `ERROR` | A supported geometry could not be measured safely, for example because its CRS is missing. |
 
 ### `GET /health`
 
-Returns `{"status":"ok"}` as a simple liveness check.
+Return `{"status":"ok"}` as a simple liveness check.
 
-## Testing and code quality
+## Architecture and processing
+
+```text
+app/
+├── main.py                    # App factory, lifespan and error handler
+├── api/files.py               # HTTP routes
+├── core/                      # Settings, exceptions and logging
+├── db/                        # SQLAlchemy engine and models
+├── schemas/files.py           # Validated API response schemas
+├── services/
+│   ├── file_service.py        # Upload orchestration and persistence
+│   ├── geospatial_service.py  # KML and Shapefile parsing
+│   ├── crs_service.py         # Measurement CRS selection
+│   └── measurement_service.py # Per-feature measurement outcomes
+└── utils/                     # ZIP validation and JSON normalization
+```
+
+The upload endpoint validates the extension and streams the body to a temporary
+file in bounded chunks. ZIP archives are checked before extraction. GeoPandas
+and Pyogrio read the KML or Shapefile, after which each feature's geometry and
+properties are normalized and stored with its measurement result. The file
+record and features are persisted in SQLite; the temporary directory is then
+removed. File IDs are UUID-style strings, while feature indexes preserve source
+order.
+
+## CRS and measurement approach
+
+The service does not calculate planar area or length directly from geographic
+longitude and latitude. If the source CRS is projected and its coordinate units
+are meters, that CRS is used. Otherwise, geometries are transformed to
+geographic coordinates, the combined feature extent's centroid selects a local
+UTM zone, and polar datasets use WGS 84 UPS. The geometries are transformed to
+that measurement CRS before Shapely calculates area or length.
+
+UTM is suitable for local datasets near one zone. Centroid-based selection can
+distort measurements for datasets spanning multiple zones, crossing the
+antimeridian, or covering a large region. A meter-based projected source CRS is
+trusted as supplied, so distortion in a projection such as Web Mercator is not
+corrected. Global or legal-grade measurements may need geodesic calculations
+or a domain-specific equal-area projection. Missing CRS metadata is never
+guessed.
+
+## Design decisions and trade-offs
+
+- **Synchronous processing:** keeps deployment simple for this initial service;
+  large files would be better handled by a background worker with progress and
+  retry support.
+- **SQLite:** makes local setup self-contained. PostgreSQL/PostGIS is a better
+  choice for multi-user concurrency and spatial queries at scale.
+- **Persist extracted results, not source uploads:** the measurement endpoint
+  works after temporary-file cleanup while avoiding retention of uploaded
+  source files.
+- **Per-feature statuses:** point, unsupported, and failed measurements are
+  represented explicitly so one feature does not abort a valid dataset.
+- **Schema setup at startup:** SQLAlchemy creates the initial tables. Alembic
+  migrations should be added before evolving a deployed schema.
+- **Projected planar measurement:** provides straightforward meter-based area
+  and length, with the CRS limitations described above. Geodesic or
+  domain-specific calculations remain future options.
+
+## Development and tests
+
+Install `requirements-dev.txt`, then run:
 
 ```bash
 pytest
@@ -244,54 +260,30 @@ ruff check app tests
 black --check app tests
 ```
 
-Tests construct small KML and Shapefile fixtures locally and do not call
-external services.
-
-## Design decisions
-
-- **Synchronous processing:** GeoPandas parsing is CPU- and I/O-heavy, but
-  processing is kept in-process to keep the first version operationally simple.
-  Large files can later move to a background worker.
-- **SQLite and SQLAlchemy:** one local database makes setup straightforward.
-  PostgreSQL/PostGIS is a better fit for multi-user concurrency and spatial
-  querying at scale.
-- **GeoJSON feature persistence:** geometry and properties are stored per
-  feature so a measurement request remains available after temporary upload
-  cleanup. The source file itself is not retained.
-- **Per-feature outcomes:** unsupported geometries, points, and measurement
-  failures have explicit statuses so one problematic feature does not abort the
-  rest of a valid file.
-- **Schema initialization:** SQLAlchemy `create_all` is sufficient for this
-  initial schema; Alembic migrations should be introduced before evolving a
-  deployed database.
-
-## Limitations
-
-- Requests are processed synchronously; there is no progress tracking or retry
-  queue.
-- Uploads are limited to 50 MiB by default and ZIP expansion to 200 MiB.
-- UTM selection assumes the dataset is local to one zone; large, polar, or
-  antimeridian-crossing extents need more specialized measurement methods.
-- SQLite is intended for local/small deployments, not high-write concurrency.
-- Geometry and properties are returned together for all features; very large
-  responses need pagination or streaming.
-- The original uploaded file is discarded after processing.
+Tests create small KML and Shapefile fixtures locally. They cover API uploads
+and responses, measurement and CRS behavior, missing or unsupported data,
+invalid archives, ZIP traversal protection, and configured size limits. They do
+not call external services.
 
 ## Learning
 
-This project applies the distinction between geographic coordinates measured
-in angular degrees and projected coordinates measured in linear units. It also
-shows how GeoPandas, Shapely and PyProj fit into a backend processing pipeline,
-how geometry types need different measurement handling, and how to isolate
-file parsing, CRS logic, persistence and HTTP contracts into maintainable
-layers.
+This project demonstrates why geographic coordinates in angular degrees cannot
+be used directly for metric area and distance calculations. It also shows how
+GeoPandas, Shapely, PyProj, FastAPI, and SQLAlchemy can be composed into a
+feature-processing pipeline, and how to keep CRS selection, parsing,
+measurement, persistence, and HTTP contracts in separate layers.
 
-## Future scope
+## Limitations and future scope
 
-- Add a background worker and processing progress/status updates.
-- Store data in PostGIS and add geometry-aware querying.
-- Move source uploads and large derived artifacts to object storage.
-- Add measurement pagination and output formats for large datasets.
-- Add authentication, quotas and per-user retention policies.
-- Offer geodesic calculations and configurable equal-area projections.
-- Add structured metrics, tracing, monitoring and cloud deployment support.
+- Processing is synchronous; there is no job queue, progress endpoint, or
+  retry workflow.
+- Default upload and ZIP expansion limits are 50 MiB and 200 MiB.
+- Large measurement responses are not paginated or streamed.
+- SQLite is intended for local and small deployments, not high-write
+  concurrency.
+- Authentication, per-user quotas, and retention policies are not included.
+- The original uploaded source file is not retained.
+
+Possible next steps include background workers, PostGIS, object storage,
+measurement pagination, configurable geodesic/equal-area methods,
+authentication, observability, and cloud deployment.

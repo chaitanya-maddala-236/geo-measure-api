@@ -3,6 +3,7 @@
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -147,7 +148,8 @@ def test_missing_shapefile_companions_are_reported(
 def test_missing_source_crs_keeps_features_and_marks_measurement_error(
     client: TestClient, shapefile_zip_factory, tmp_path: Path
 ) -> None:
-    content = shapefile_zip_factory(tmp_path, include_projection=False)
+    with pytest.warns(UserWarning, match="'crs' was not provided"):
+        content = shapefile_zip_factory(tmp_path, include_projection=False)
     response = client.post("/api/files/", files={"upload": ("no-crs.zip", content)})
     data = response.json()
     assert data["status"] == "COMPLETED"
